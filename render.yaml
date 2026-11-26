@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: machiawase
+    runtime: node
+    plan: free
+    branch: claude/machiaawase-app-jpjhp1
+    buildCommand: "true"
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

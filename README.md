@@ -14,7 +14,19 @@
 - **カウントダウン**と、Google マップでの**経路案内**
 - 更新は Server-Sent Events で全員にリアルタイム反映されます
 
-## 起動
+## 公開（Render・無料）
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ZenithExtremers/machiawase)
+
+1. 上のボタンを押す（または https://dashboard.render.com で **New → Blueprint** を選びこのリポジトリを指定）
+2. GitHub でログインし、このリポジトリへのアクセスを許可
+3. **Apply** を押して数分待つと `https://machiawase-xxxx.onrender.com` のような URL ができます
+
+無料プランの注意:
+- 15分アクセスがないとスリープし、次に開くとき 30〜60 秒ほどかかります
+- 再起動やスリープ復帰でディスクが初期化されるため、作った待ち合わせは消えることがあります（当日使う分には問題なし）
+
+## 起動（ローカル）
 
 ```bash
 npm start            # http://localhost:3000
