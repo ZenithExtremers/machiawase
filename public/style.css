@@ -212,3 +212,18 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
   box-shadow: 0 1px 4px rgba(0,0,0,.35);
 }
 .pin-goal { background: var(--accent); font-size: 16px; }
+
+.search-row { display: flex; gap: 8px; }
+.search-row input { flex: 1; min-width: 0; }
+.search-row .btn { padding: 10px 14px; white-space: nowrap; }
+.place-results { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.place-results li + li { border-top: 1px solid var(--line); }
+.place-results button {
+  display: block; width: 100%; text-align: left;
+  font: inherit; font-weight: 400; color: var(--text);
+  background: var(--card); border: 0; padding: 10px 12px; cursor: pointer;
+}
+.place-results button:active, .place-results button:hover { background: var(--accent-soft); }
+.place-results strong { display: block; font-size: 15px; }
+.place-results small { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-results .empty { padding: 10px 12px; color: var(--muted); font-size: 14px; font-weight: 400; }

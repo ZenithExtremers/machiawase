@@ -25,9 +25,15 @@
         <label>タイトル
           <input name="title" maxlength="60" placeholder="例: 金曜の飲み会" required>
         </label>
-        <label>場所
-          <input name="place" maxlength="100" placeholder="例: 渋谷駅 ハチ公前" required>
-        </label>
+        <div class="field">
+          <label for="place-input">場所</label>
+          <div class="search-row">
+            <input id="place-input" name="place" maxlength="100" placeholder="例: 渋谷駅 ハチ公前" enterkeyhint="search" required>
+            <button type="button" id="place-search" class="btn">🔍 検索</button>
+          </div>
+          <p class="hint">駅名やお店の名前で検索すると、地図にピンが立ちます</p>
+          <ul id="place-results" class="place-results" hidden></ul>
+        </div>
         <label>日時
           <input name="time" type="datetime-local" required>
         </label>

@@ -119,6 +119,108 @@ let pickMap = null;
 let pickMarker = null;
 let picked = null;
 
+function setPick(latlng, zoom) {
+  picked = { lat: latlng.lat, lng: latlng.lng };
+  if (!pickMap) return;
+  if (pickMarker) pickMarker.setLatLng(latlng);
+  else pickMarker = L.marker(latlng, { icon: pinIcon('pin-goal', '★') }).addTo(pickMap);
+  if (zoom) pickMap.setView(latlng, zoom);
+  $('#pick-hint').textContent = 'ピンを置きました（地図をタップで移動できます）';
+}
+
+$('#pick-here').addEventListener('click', () => {
+  if (!navigator.geolocation) return toast('位置情報が使えません');
+  navigator.geolocation.getCurrentPosition(
+    (p) => setPick({ lat: p.coords.latitude, lng: p.coords.longitude }, 16),
+    () => toast('現在地を取得できませんでした'),
+    { enableHighAccuracy: true, timeout: 10000 },
+  );
+});
+
+// ---------- 場所検索 ----------
+// OpenStreetMap (Nominatim) で駅・お店・ランドマークを探し、見つからなければ国土地理院の住所検索を使う
+async function searchOSM(q) {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.search = new URLSearchParams({ q, format: 'jsonv2', limit: '8', 'accept-language': 'ja', countrycodes: 'jp' });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('search failed');
+  return (await res.json()).map((r) => {
+    const parts = r.display_name.split(',').map((x) => x.trim());
+    const name = r.name || parts[0];
+    const area = parts.filter((x) => x !== name && x !== '日本' && !/^\d{3}-?\d{4}$/.test(x)).reverse().join(' ');
+    return { name, area, lat: Number(r.lat), lng: Number(r.lon) };
+  });
+}
+
+async function searchGSI(q) {
+  const res = await fetch(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(q)}`);
+  if (!res.ok) throw new Error('search failed');
+  return (await res.json()).slice(0, 8).map((r) => ({
+    name: r.properties.title,
+    area: '',
+    lat: r.geometry.coordinates[1],
+    lng: r.geometry.coordinates[0],
+  }));
+}
+
+let searching = false;
+async function placeSearch() {
+  const q = $('#place-input').value.trim();
+  if (!q) return toast('場所の名前を入力してください');
+  if (searching) return;
+  searching = true;
+  const btn = $('#place-search');
+  const list = $('#place-results');
+  btn.disabled = true;
+  btn.textContent = '検索中…';
+  let results = [];
+  try {
+    results = await searchOSM(q);
+  } catch {}
+  if (!results.length) {
+    try {
+      results = await searchGSI(q);
+    } catch {}
+  }
+  searching = false;
+  btn.disabled = false;
+  btn.textContent = '🔍 検索';
+  list.hidden = false;
+  if (!results.length) {
+    list.replaceChildren(el('li', { class: 'empty' }, '見つかりませんでした。別の言い方で試すか、地図をタップしてください'));
+    return;
+  }
+  list.replaceChildren(
+    ...results.map((r) =>
+      el(
+        'li',
+        {},
+        el(
+          'button',
+          {
+            type: 'button',
+            onclick: () => {
+              setPick({ lat: r.lat, lng: r.lng }, 17);
+              list.hidden = true;
+              $('#pick-map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            },
+          },
+          el('strong', {}, r.name),
+          r.area ? el('small', {}, r.area) : null,
+        ),
+      ),
+    ),
+  );
+}
+
+$('#place-search').addEventListener('click', placeSearch);
+$('#place-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault();
+    placeSearch();
+  }
+});
+
 function initHome() {
   show('home');
   document.title = 'まちあわせ';
@@ -133,25 +235,7 @@ function initHome() {
 
   if (hasMap() && !pickMap) {
     pickMap = baseMap('pick-map', [35.681, 139.767], 12); // 東京駅
-    const setPick = (latlng) => {
-      picked = latlng;
-      if (pickMarker) pickMarker.setLatLng(latlng);
-      else pickMarker = L.marker(latlng, { icon: pinIcon('pin-goal', '★') }).addTo(pickMap);
-      $('#pick-hint').textContent = 'ピンを置きました（もう一度タップで移動）';
-    };
     pickMap.on('click', (e) => setPick(e.latlng));
-    $('#pick-here').addEventListener('click', () => {
-      if (!navigator.geolocation) return toast('位置情報が使えません');
-      navigator.geolocation.getCurrentPosition(
-        (p) => {
-          const ll = L.latLng(p.coords.latitude, p.coords.longitude);
-          pickMap.setView(ll, 16);
-          setPick(ll);
-        },
-        () => toast('現在地を取得できませんでした'),
-        { enableHighAccuracy: true, timeout: 10000 },
-      );
-    });
   } else if (!hasMap()) {
     $('#pick-map').closest('.field').hidden = true;
   }
