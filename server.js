@@ -147,6 +147,9 @@ function authMember(req, room) {
 
 // ---------- API ----------
 async function handleApi(req, res, parts) {
+  // GET /api/rooms/health (スリープ防止の自己アクセス用)
+  if (parts.length === 2 && parts[1] === 'health') return send(res, 200, { ok: true });
+
   // POST /api/rooms
   if (parts.length === 1 && req.method === 'POST') {
     const b = await readBody(req);
@@ -158,7 +161,10 @@ async function handleApi(req, res, parts) {
     if (Number.isNaN(time.getTime())) return send(res, 400, { error: '日時が不正です' });
     const lat = coord(b.lat, 90);
     const lng = coord(b.lng, 180);
-    const id = newId(6);
+    // リンクから作り直す場合は同じ ID を使う（まだ存在しない時だけ）
+    const wanted = typeof b.id === 'string' && /^[A-Za-z0-9_-]{6,16}$/.test(b.id) ? b.id : null;
+    if (wanted && rooms[wanted]) return send(res, 200, publicRoom(rooms[wanted]));
+    const id = wanted || newId(6);
     rooms[id] = {
       id,
       title,
@@ -321,8 +327,20 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// 無料の Render は 15 分アクセスがないとスリープしてデータが消えるので、
+// 待ち合わせが残っている間は 10 分ごとに自分の公開 URL にアクセスして起こしておく
+function keepAlive() {
+  const base = process.env.RENDER_EXTERNAL_URL;
+  if (!base) return;
+  setInterval(() => {
+    if (!Object.keys(rooms).length) return;
+    fetch(`${base}/api/rooms/health`).catch(() => {});
+  }, 10 * 60 * 1000).unref();
+}
+
 if (require.main === module) {
   server.listen(PORT, () => console.log(`まちあわせ: http://localhost:${PORT}`));
+  keepAlive();
 }
 
 module.exports = { server, STATUSES };

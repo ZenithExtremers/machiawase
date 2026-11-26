@@ -296,8 +296,82 @@ function myMember() {
 
 function rememberRecent(room) {
   const list = store.get('machiawase:recent', []).filter((r) => r.id !== room.id);
-  list.unshift({ id: room.id, title: room.title, place: room.place, time: room.time });
+  list.unshift({ id: room.id, title: room.title, place: room.place, time: room.time, d: encodeRoom(room) });
   store.set('machiawase:recent', list.slice(0, 10));
+}
+
+// ---------- リンクに待ち合わせ情報を埋め込む（サーバーのデータが消えても作り直せるように） ----------
+function encodeRoom(room) {
+  const json = JSON.stringify({ t: room.title, p: room.place, n: room.note || '', at: room.time, la: room.lat, ln: room.lng });
+  const bin = String.fromCharCode(...new TextEncoder().encode(json));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeRoom(str) {
+  try {
+    const bin = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+    const d = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0))));
+    return { title: d.t, place: d.p, note: d.n, time: d.at, lat: d.la, lng: d.ln };
+  } catch {
+    return null;
+  }
+}
+
+const roomLink = (room) => `${location.origin}/r/${room.id}#d=${encodeRoom(room)}`;
+
+function linkData(id) {
+  const m = location.hash.match(/[#&]d=([A-Za-z0-9_-]+)/);
+  if (m) return decodeRoom(m[1]);
+  const saved = store.get('machiawase:recent', []).find((r) => r.id === id);
+  return saved && saved.d ? decodeRoom(saved.d) : null;
+}
+
+let recovering = false;
+async function handleMissing(id) {
+  const data = linkData(id);
+  if (data && !recovering) {
+    recovering = true;
+    try {
+      await api('POST', '/api/rooms', { ...data, id });
+      toast('サーバーが再起動していたので、まちあわせを復元しました');
+      recovering = false;
+      return connect(id);
+    } catch {}
+    recovering = false;
+  }
+  teardownRoom();
+  show('missing');
+}
+
+function connect(id) {
+  if (state.source) state.source.close();
+  const source = new EventSource(`/api/rooms/${encodeURIComponent(id)}/events`);
+  state.source = source;
+  source.onmessage = (e) => {
+    state.room = JSON.parse(e.data);
+    // 自分が削除されていたら（サーバー再起動など）参加情報をリセット
+    if (state.me && !myMember()) {
+      store.set(memberKey(id), null);
+      state.me = null;
+      stopLocation();
+      const name = store.get('machiawase:name', '');
+      if (name && !$('#join-form').name.value) $('#join-form').name.value = name;
+    }
+    show('room');
+    renderRoom();
+  };
+  source.onerror = async () => {
+    // 一時的な切断は EventSource が自動で再接続する。完全に切れた時だけ状況を確認する
+    if (source.readyState !== EventSource.CLOSED && state.room) return;
+    try {
+      await api('GET', `/api/rooms/${encodeURIComponent(id)}`);
+      if (state.source === source) setTimeout(() => state.source === source && connect(id), 3000);
+    } catch (err) {
+      if (state.source !== source) return;
+      if (err.status === 404) handleMissing(id);
+      else setTimeout(() => state.source === source && connect(id), 5000);
+    }
+  };
 }
 
 function initRoom(id) {
@@ -306,30 +380,7 @@ function initRoom(id) {
   state.me = store.get(memberKey(id), null);
   state.fitted = 0;
 
-  state.source = new EventSource(`/api/rooms/${encodeURIComponent(id)}/events`);
-  state.source.onmessage = (e) => {
-    state.room = JSON.parse(e.data);
-    // 自分が削除されていたら参加情報をリセット
-    if (state.me && !myMember()) {
-      store.set(memberKey(id), null);
-      state.me = null;
-      stopLocation();
-    }
-    show('room');
-    renderRoom();
-  };
-  state.source.onerror = async () => {
-    if (state.room) return; // 一時的な切断は EventSource が自動再接続する
-    try {
-      await api('GET', `/api/rooms/${encodeURIComponent(id)}`);
-    } catch (err) {
-      if (err.status === 404) {
-        teardownRoom();
-        show('missing');
-      }
-    }
-  };
-
+  connect(id);
   state.countdownTimer = setInterval(renderCountdown, 1000);
 }
 
@@ -364,6 +415,9 @@ function renderRoom() {
   const me = myMember();
   document.title = `${room.title} - まちあわせ`;
   rememberRecent(room);
+  // アドレスバーの URL にも情報を入れておく（そのままコピーして送っても復元できる）
+  const hash = `#d=${encodeRoom(room)}`;
+  if (location.hash !== hash) history.replaceState(null, '', location.pathname + hash);
 
   $('#room-title').textContent = room.title;
   $('#room-time').textContent = fmtDate(room.time);
@@ -577,7 +631,7 @@ $('#msg-form').addEventListener('submit', (e) => {
 
 $('#share-btn').addEventListener('click', async () => {
   const room = state.room;
-  const url = location.origin + `/r/${state.roomId}`;
+  const url = roomLink(room);
   const text = `【${room.title}】${fmtDate(room.time)} @ ${room.place}`;
   if (navigator.share) {
     try {
