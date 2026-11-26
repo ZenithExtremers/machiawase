@@ -226,6 +226,15 @@ function initHome() {
   document.title = 'まちあわせ';
 
   const form = $('#create-form');
+  // ほかのアプリ（GOD Life など）から ?title=&place=&time=YYYY-MM-DDTHH:MM&note= 付きで開かれたら、作成画面に入れておく
+  const q = new URLSearchParams(location.search);
+  if (q.has('title') || q.has('place') || q.has('time')) {
+    if (q.get('title')) form.title.value = q.get('title').slice(0, 60);
+    if (q.get('place')) form.place.value = q.get('place').slice(0, 100);
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(q.get('time') || '')) form.time.value = q.get('time');
+    if (q.get('note')) form.note.value = q.get('note').slice(0, 300);
+    history.replaceState(null, '', location.pathname); // 再読み込みでまた入らないように
+  }
   if (!form.time.value) {
     const d = new Date(Date.now() + 60 * 60 * 1000);
     d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15, 0, 0);
