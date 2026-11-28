@@ -59,3 +59,49 @@ test('座標が null なら位置なしとして扱う', async () => {
   assert.equal(body.lat, null);
   assert.equal(body.lng, null);
 });
+
+test('同じ名前で参加すると確認を求め、引き継ぐと同じメンバーになる', async () => {
+  const { body: room } = await call('POST', '/api/rooms', { title: 't', place: 'p', time: new Date().toISOString() });
+  const a = (await call('POST', `/api/rooms/${room.id}/members`, { name: 'ウルトラ' })).body;
+  const dup = await call('POST', `/api/rooms/${room.id}/members`, { name: 'ウルトラ' });
+  assert.equal(dup.status, 409);
+  const again = await call('POST', `/api/rooms/${room.id}/members`, { name: 'ウルトラ', takeover: true });
+  assert.equal(again.body.id, a.id);
+  assert.notEqual(again.body.token, a.token);
+  // 古い端末のトークンは使えなくなる
+  assert.equal((await call('PATCH', `/api/rooms/${room.id}/members/${a.id}`, { status: '到着' }, a.token)).status, 403);
+  const after = (await call('GET', `/api/rooms/${room.id}`)).body;
+  assert.equal(after.members.length, 1);
+  assert.equal(after.members[0].status, '未設定');
+});
+
+test('到着予定は押した時刻から計算し、到着すると消える', async () => {
+  const { body: room } = await call('POST', '/api/rooms', { title: 't', place: 'p', time: new Date().toISOString() });
+  const a = (await call('POST', `/api/rooms/${room.id}/members`, { name: 'A' })).body;
+  const before = Date.now();
+  await call('PATCH', `/api/rooms/${room.id}/members/${a.id}`, { eta: 10 }, a.token);
+  let m = (await call('GET', `/api/rooms/${room.id}`)).body.members[0];
+  const etaAt = new Date(m.etaAt).getTime();
+  assert.ok(Math.abs(etaAt - (before + 600e3)) < 5000);
+  // 位置を更新しても到着予定はずれない
+  await call('PATCH', `/api/rooms/${room.id}/members/${a.id}`, { lat: 35, lng: 139 }, a.token);
+  m = (await call('GET', `/api/rooms/${room.id}`)).body.members[0];
+  assert.equal(new Date(m.etaAt).getTime(), etaAt);
+  await call('PATCH', `/api/rooms/${room.id}/members/${a.id}`, { status: '到着' }, a.token);
+  m = (await call('GET', `/api/rooms/${room.id}`)).body.members[0];
+  assert.equal(m.eta, null);
+  assert.equal(m.etaAt, null);
+  assert.ok(m.arrivedAt);
+});
+
+test('他人は外せないが、しばらく動きのないメンバーは外せる', async () => {
+  const { body: room } = await call('POST', '/api/rooms', { title: 't', place: 'p', time: new Date().toISOString() });
+  const a = (await call('POST', `/api/rooms/${room.id}/members`, { name: 'A' })).body;
+  const b = (await call('POST', `/api/rooms/${room.id}/members`, { name: 'B' })).body;
+  assert.equal((await call('DELETE', `/api/rooms/${room.id}/members/${b.id}`, null, a.token)).status, 403);
+  // B の最終更新を 31 分前にする
+  const { rooms } = require('../server');
+  rooms[room.id].members[b.id].updatedAt = new Date(Date.now() - 31 * 60e3).toISOString();
+  assert.equal((await call('DELETE', `/api/rooms/${room.id}/members/${b.id}`, null, a.token)).status, 200);
+  assert.equal((await call('GET', `/api/rooms/${room.id}`)).body.members.length, 1);
+});

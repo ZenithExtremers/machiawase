@@ -80,31 +80,34 @@
         <button class="btn btn-primary" type="submit">参加</button>
       </form>
 
-      <div id="me-panel" class="card" hidden>
-        <div class="field-head">
-          <h2><span id="me-name"></span> さんのステータス</h2>
-          <button id="leave-btn" class="btn-link danger">抜ける</button>
-        </div>
-        <div id="status-buttons" class="chips"></div>
-        <div class="eta-row">
-          <span>到着まで</span>
-          <div class="chips" id="eta-buttons"></div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="share-loc">
-          <span>現在地をみんなに共有する</span>
-        </label>
-        <p class="hint" id="loc-hint"></p>
-      </div>
-
       <div class="card">
         <h2>メンバー <span id="member-count" class="badge"></span></h2>
         <ul id="member-list" class="member-list"></ul>
       </div>
 
-      <div class="card">
-        <h2>地図</h2>
+      <div class="card" id="map-card">
+        <div class="field-head">
+          <h2>地図</h2>
+          <button type="button" id="fit-btn" class="btn-link">全員を表示</button>
+        </div>
         <div id="room-map" class="map"></div>
+      </div>
+
+      <div id="me-panel" class="card me-panel" hidden>
+        <div class="field-head">
+          <h2>自分（<span id="me-name"></span>）</h2>
+          <button id="leave-btn" class="btn-link danger">抜ける</button>
+        </div>
+        <div id="status-buttons" class="chips scroll"></div>
+        <div class="eta-row" id="eta-row">
+          <span>到着まで</span>
+          <div class="chips scroll" id="eta-buttons"></div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="share-loc">
+          <span>現在地を共有</span>
+          <span class="loc-state" id="loc-hint"></span>
+        </label>
       </div>
 
       <div class="card">

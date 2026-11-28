@@ -15,7 +15,8 @@ const MAX_BODY = 16 * 1024;
 const MAX_MEMBERS = 50;
 const MAX_MESSAGES = 200;
 const ROOM_TTL_AFTER_MEETUP = 2 * 24 * 60 * 60 * 1000; // 待ち合わせ時刻の2日後に削除
-const STATUSES = ['未出発', '向かってる', 'もうすぐ着く', '到着', '遅れる', '行けない'];
+const STATUSES = ['未設定', '未出発', '向かってる', 'もうすぐ着く', '到着', '遅れる', '行けない'];
+const INACTIVE_MS = 30 * 60 * 1000; // これ以上更新がないメンバーは他の人も外せる
 
 // ---------- 永続化 ----------
 let rooms = {};
@@ -76,6 +77,8 @@ function publicRoom(room) {
       name: m.name,
       status: m.status,
       eta: m.eta,
+      etaAt: m.etaAt || null,
+      arrivedAt: m.arrivedAt || null,
       lat: m.lat,
       lng: m.lng,
       locationAt: m.locationAt,
@@ -214,10 +217,22 @@ async function handleApi(req, res, parts) {
     if (!name) return send(res, 400, { error: '名前を入力してください' });
     if (Object.keys(room.members).length >= MAX_MEMBERS)
       return send(res, 400, { error: '参加人数の上限に達しています' });
+    // 同じ名前の人がいたら、同じ人の入り直し（別の端末・ブラウザなど）として引き継ぐ
+    const same = Object.values(room.members).find((m) => m.name.toLowerCase() === name.toLowerCase());
+    if (same) {
+      if (!b.takeover) return send(res, 409, { error: `「${same.name}」はもう参加しています`, existing: true });
+      same.token = newId(18);
+      same.updatedAt = new Date().toISOString();
+      changed(room);
+      return send(res, 200, { id: same.id, token: same.token });
+    }
     const id = newId(6);
     const token = newId(18);
     const now = new Date().toISOString();
-    room.members[id] = { id, token, name, status: '未出発', eta: null, lat: null, lng: null, locationAt: null, updatedAt: now };
+    room.members[id] = {
+      id, token, name, status: '未設定', eta: null, etaAt: null, arrivedAt: null,
+      lat: null, lng: null, locationAt: null, updatedAt: now,
+    };
     changed(room);
     return send(res, 201, { id, token });
   }
@@ -225,13 +240,19 @@ async function handleApi(req, res, parts) {
   // PATCH / DELETE /api/rooms/:id/members/:mid
   if (parts.length === 4 && parts[2] === 'members') {
     const me = authMember(req, room);
-    if (!me || me.id !== parts[3]) return send(res, 403, { error: '権限がありません' });
 
     if (req.method === 'DELETE') {
-      delete room.members[me.id];
+      const target = room.members[parts[3]];
+      if (!target) return send(res, 200, { ok: true });
+      // 自分自身か、しばらく動きのないメンバー（抜け殻）なら外せる
+      const inactive = Date.now() - new Date(target.updatedAt).getTime() >= INACTIVE_MS && target.status !== '到着';
+      if (!me || (me.id !== target.id && !inactive)) return send(res, 403, { error: '権限がありません' });
+      delete room.members[target.id];
       changed(room);
       return send(res, 200, { ok: true });
     }
+
+    if (!me || me.id !== parts[3]) return send(res, 403, { error: '権限がありません。もう一度参加してください' });
 
     if (req.method === 'PATCH') {
       const b = await readBody(req);
@@ -241,11 +262,17 @@ async function handleApi(req, res, parts) {
       }
       if ('status' in b) {
         if (!STATUSES.includes(b.status)) return send(res, 400, { error: 'ステータスが不正です' });
+        if (b.status !== me.status) me.arrivedAt = b.status === '到着' ? new Date().toISOString() : null;
         me.status = b.status;
+        if (b.status === '到着' || b.status === '行けない') me.eta = me.etaAt = null;
       }
       if ('eta' in b) {
         const eta = b.eta === null ? null : Math.round(Number(b.eta));
-        me.eta = eta === null || (Number.isFinite(eta) && eta >= 0 && eta <= 600) ? eta : me.eta;
+        if (eta === null || (Number.isFinite(eta) && eta >= 0 && eta <= 600)) {
+          me.eta = eta;
+          // 「あと◯分」は押した時点からの到着予定時刻として保存する（位置更新でずれないように）
+          me.etaAt = eta === null ? null : new Date(Date.now() + eta * 60000).toISOString();
+        }
       }
       if ('lat' in b || 'lng' in b) {
         const lat = coord(b.lat, 90);
@@ -343,4 +370,4 @@ if (require.main === module) {
   keepAlive();
 }
 
-module.exports = { server, STATUSES };
+module.exports = { server, STATUSES, get rooms() { return rooms; } };

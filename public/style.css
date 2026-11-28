@@ -227,3 +227,30 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .place-results strong { display: block; font-size: 15px; }
 .place-results small { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .place-results .empty { padding: 10px 12px; color: var(--muted); font-size: 14px; font-weight: 400; }
+
+/* ---------- まちあわせ画面の改善 ---------- */
+.chips.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+.chips.scroll::-webkit-scrollbar { display: none; }
+.chips.scroll .chip { flex-shrink: 0; }
+
+.me-panel { gap: 10px; }
+.toggle .loc-state { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted); }
+.toggle .loc-state.on { color: var(--ok); font-weight: 600; }
+
+.member-list li.clickable { cursor: pointer; }
+.member-list li.clickable:active { background: var(--bg); }
+.member-list li.late .member-sub { color: var(--ng); font-weight: 600; }
+.member-list li.late .avatar { box-shadow: 0 0 0 3px var(--ng); }
+.member-list li.ghost { opacity: 0.45; }
+.member-list .section-label { color: var(--muted); font-size: 12px; font-weight: 700; padding: 10px 0 2px; border-bottom: 0; }
+.member-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.remove-btn { background: none; border: 0; color: var(--muted); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; padding: 0; }
+.s-未設定 { color: var(--muted); }
+.s-遅刻 { background: #f6dada; color: var(--ng); }
+
+/* ダークモードでは地図も暗くする（ピンはそのままの色） */
+@media (prefers-color-scheme: dark) {
+  .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9); }
+  .leaflet-container { background: #1b1816; }
+  .s-遅刻 { background: #3d1f1f; }
+}

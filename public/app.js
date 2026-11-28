@@ -1,7 +1,9 @@
 'use strict';
 
 const STATUSES = ['未出発', '向かってる', 'もうすぐ着く', '到着', '遅れる', '行けない'];
-const ETAS = [5, 10, 15, 30, 60];
+const ETAS = [5, 10, 15, 30];
+const INACTIVE_MS = 30 * 60 * 1000; // これ以上動きのないメンバーは薄く表示して外せるようにする
+const statusLabel = (s) => (s === '未設定' ? '―' : s);
 const QUICK = ['今どこ？', '着いたよ！', '少し遅れます🙏', '改札出たところにいるよ', '了解！'];
 const LOC_INTERVAL = 15000; // 位置情報の送信間隔 (ms)
 
@@ -288,7 +290,8 @@ const state = {
   map: null,
   goalMarker: null,
   memberMarkers: new Map(),
-  fitted: 0,
+  fittedCount: 0,
+  userMoved: false,
   watchId: null,
   lastSent: 0,
   pendingPos: null,
@@ -387,7 +390,8 @@ function initRoom(id) {
   teardownRoom();
   state.roomId = id;
   state.me = store.get(memberKey(id), null);
-  state.fitted = 0;
+  state.fittedCount = 0;
+  state.userMoved = false;
 
   connect(id);
   state.countdownTimer = setInterval(renderCountdown, 1000);
@@ -449,11 +453,17 @@ function renderRoom() {
         el('button', { type: 'button', class: `chip${me.status === s ? ' active' : ''}`, onclick: () => updateMe({ status: s }) }, s),
       ),
     );
+    // 着いた・行けない人には「到着まで」は不要
+    $('#eta-row').hidden = me.status === '到着' || me.status === '行けない';
+    const setEta = (n) => {
+      const patch = { eta: n };
+      // 時間を選んだら「向かってる」扱いにする
+      if (n != null && (me.status === '未設定' || me.status === '未出発')) patch.status = '向かってる';
+      updateMe(patch);
+    };
     $('#eta-buttons').replaceChildren(
-      ...ETAS.map((n) =>
-        el('button', { type: 'button', class: `chip${me.eta === n ? ' active' : ''}`, onclick: () => updateMe({ eta: n }) }, `${n}分`),
-      ),
-      el('button', { type: 'button', class: `chip${me.eta == null ? ' active' : ''}`, onclick: () => updateMe({ eta: null }) }, '未定'),
+      ...ETAS.map((n) => el('button', { type: 'button', class: `chip${me.eta === n ? ' active' : ''}`, onclick: () => setEta(n) }, `${n}分`)),
+      el('button', { type: 'button', class: `chip${me.eta == null ? ' active' : ''}`, onclick: () => setEta(null) }, '未定'),
     );
     if (!$('#quick-msgs').childElementCount) {
       $('#quick-msgs').append(...QUICK.map((t) => el('button', { type: 'button', class: 'chip', onclick: () => sendMessage(t) }, t)));
@@ -468,16 +478,41 @@ function renderRoom() {
   renderMessages();
 }
 
+const isGhost = (m) => m.status !== '到着' && Date.now() - new Date(m.updatedAt).getTime() >= INACTIVE_MS;
+const etaLeft = (m) => (m.etaAt ? Math.max(0, Math.ceil((new Date(m.etaAt).getTime() - Date.now()) / 60000)) : null);
+const distToGoal = (m) =>
+  m.lat != null && state.room.lat != null ? distance(m.lat, m.lng, state.room.lat, state.room.lng) : null;
+
+function isLate(m) {
+  return Date.now() > new Date(state.room.time).getTime() && m.status !== '到着' && m.status !== '行けない';
+}
+
 function memberSub(m) {
   const bits = [];
-  if (m.eta != null && m.status !== '到着' && m.status !== '行けない') {
-    const at = new Date(new Date(m.updatedAt).getTime() + m.eta * 60000);
-    bits.push(`あと${m.eta}分（${fmtClock(at.toISOString())}頃）`);
+  if (m.status === '到着') {
+    if (m.arrivedAt) bits.push(`${fmtClock(m.arrivedAt)} 着`);
+  } else if (m.status !== '行けない') {
+    const left = etaLeft(m);
+    if (left != null) bits.push(left === 0 ? `${fmtClock(m.etaAt)}頃 着予定` : `あと${left}分（${fmtClock(m.etaAt)}頃）`);
+    const d = distToGoal(m);
+    if (d != null) bits.push(`集合場所まで ${fmtDistance(d)}`);
+    else if (m.lat != null) bits.push('位置共有中');
+    if (isLate(m)) bits.unshift('遅刻中');
   }
-  if (m.lat != null && state.room.lat != null) bits.push(`集合場所まで ${fmtDistance(distance(m.lat, m.lng, state.room.lat, state.room.lng))}`);
-  else if (m.lat != null) bits.push('位置共有中');
   bits.push(`更新 ${ago(m.updatedAt)}`);
   return bits.join(' ・ ');
+}
+
+// 着いてない人（到着予定が早い順→近い順）→ 到着した人（着いた順）→ 行けない人
+function sortMembers(members) {
+  const group = (m) => (m.status === '到着' ? 1 : m.status === '行けない' ? 2 : isGhost(m) ? 0.5 : 0);
+  const key = (m) => {
+    if (m.status === '到着') return new Date(m.arrivedAt || m.updatedAt).getTime();
+    const left = etaLeft(m);
+    const d = distToGoal(m);
+    return (left ?? 1e6) * 1e6 + (d ?? 1e9) / 1000;
+  };
+  return [...members].sort((a, b) => group(a) - group(b) || key(a) - key(b));
 }
 
 function renderMembers() {
@@ -487,44 +522,101 @@ function renderMembers() {
     $('#member-list').replaceChildren(el('li', { class: 'hint' }, 'まだ誰も参加していません。リンクを共有しましょう！'));
     return;
   }
-  $('#member-list').replaceChildren(
-    ...members.map((m) =>
+  const items = [];
+  const groupOf = (m) => (m.status === '到着' ? '到着した人' : m.status === '行けない' ? '行けない人' : 'まだの人');
+  const multi = new Set(members.map(groupOf)).size > 1;
+  let lastGroup = null;
+  for (const m of sortMembers(members)) {
+    const g = groupOf(m);
+    if (multi && g !== lastGroup) items.push(el('li', { class: 'section-label' }, g));
+    lastGroup = g;
+    const mine = state.me && m.id === state.me.id;
+    const ghost = !mine && isGhost(m);
+    const late = isLate(m);
+    const located = m.lat != null && hasMap();
+    const cls = [located ? 'clickable' : '', late ? 'late' : '', ghost ? 'ghost' : ''].filter(Boolean).join(' ');
+    items.push(
       el(
         'li',
-        {},
+        { class: cls, onclick: located ? () => focusMember(m.id) : null },
         el('div', { class: 'avatar', style: `background:${colorOf(m.id)}` }, [...m.name][0]),
         el(
           'div',
           { class: 'member-info' },
-          el('div', { class: 'member-name' }, m.name + (state.me && m.id === state.me.id ? '（自分）' : '')),
+          el('div', { class: 'member-name' }, m.name + (mine ? '（自分）' : '') + (located ? ' 📍' : '')),
           el('div', { class: 'member-sub' }, memberSub(m)),
         ),
-        el('span', { class: `status-pill s-${m.status}` }, m.status),
+        el(
+          'div',
+          { class: 'member-side' },
+          el('span', { class: `status-pill s-${late && m.status === '未設定' ? '遅刻' : m.status}` }, late && m.status === '未設定' ? '遅刻中' : statusLabel(m.status)),
+          ghost && state.me
+            ? el('button', { type: 'button', class: 'remove-btn', onclick: (e) => { e.stopPropagation(); removeMember(m); } }, '外す')
+            : null,
+        ),
       ),
-    ),
-  );
+    );
+  }
+  $('#member-list').replaceChildren(...items);
+}
+
+async function removeMember(m) {
+  if (!confirm(`「${m.name}」はしばらく更新がありません。メンバーから外しますか？`)) return;
+  try {
+    await api('DELETE', `/api/rooms/${state.roomId}/members/${m.id}`, null, state.me.token);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function mapPoints() {
+  const room = state.room;
+  const pts = room.members.filter((m) => m.lat != null).map((m) => [m.lat, m.lng]);
+  if (room.lat != null) pts.push([room.lat, room.lng]);
+  return pts;
+}
+
+function fitAll() {
+  const pts = mapPoints();
+  if (!state.map || !pts.length) return;
+  state.map.invalidateSize();
+  if (pts.length > 1) state.map.fitBounds(pts, { padding: [56, 56], maxZoom: 16 });
+  else state.map.setView(pts[0], 16);
+}
+
+function focusMember(id) {
+  const marker = state.memberMarkers.get(id);
+  if (!marker || !state.map) return;
+  state.userMoved = true;
+  $('#map-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  state.map.setView(marker.getLatLng(), 17);
+  marker.openTooltip();
 }
 
 function renderMap() {
+  const card = $('#map-card');
   if (!hasMap()) {
-    $('#room-map').closest('.card').hidden = true;
+    card.hidden = true;
     return;
   }
   const room = state.room;
   const hasGoal = room.lat != null;
   const located = room.members.filter((m) => m.lat != null);
-  const card = $('#room-map').closest('.card');
   card.hidden = !hasGoal && !located.length;
   if (card.hidden) return;
 
   if (!state.map) {
     state.map = baseMap('room-map', hasGoal ? [room.lat, room.lng] : [located[0].lat, located[0].lng], 16);
+    // 自分で地図を動かしたら、自動で表示範囲を変えない
+    state.map.on('dragstart', () => (state.userMoved = true));
+    state.map.getContainer().addEventListener('wheel', () => (state.userMoved = true), { passive: true });
+    state.map.getContainer().addEventListener('touchstart', (e) => e.touches.length > 1 && (state.userMoved = true), { passive: true });
   }
   state.map.invalidateSize();
 
   if (hasGoal && !state.goalMarker) {
-    state.goalMarker = L.marker([room.lat, room.lng], { icon: pinIcon('pin-goal', '★'), zIndexOffset: 1000 })
-      .bindPopup(`集合: ${room.place.replace(/[<>&"]/g, '')}`)
+    state.goalMarker = L.marker([room.lat, room.lng], { icon: pinIcon('pin-goal', '★'), zIndexOffset: -1000 })
+      .bindTooltip(`集合: ${room.place}`.replace(/[<>&"]/g, ''))
       .addTo(state.map);
   }
 
@@ -539,7 +631,7 @@ function renderMap() {
     } else {
       marker.setLatLng([m.lat, m.lng]).setIcon(icon);
     }
-    marker.bindTooltip(`${m.name}（${m.status}）`.replace(/[<>&"]/g, ''));
+    marker.bindTooltip(`${m.name}（${statusLabel(m.status)}）`.replace(/[<>&"]/g, ''));
   }
   for (const [id, marker] of state.memberMarkers) {
     if (!seen.has(id)) {
@@ -548,16 +640,23 @@ function renderMap() {
     }
   }
 
-  // 最初に1回、さらに2地点以上そろった時に1回だけ全体が見えるように合わせる
-  const pts = located.map((m) => [m.lat, m.lng]);
-  if (hasGoal) pts.push([room.lat, room.lng]);
-  const level = pts.length > 1 ? 2 : 1;
-  if (state.fitted < level) {
-    if (level === 2) state.map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
-    else state.map.setView(pts[0], 16);
-    state.fitted = level;
-  }
+  // 地図に出る人が増えた時は、全員が見えるように合わせ直す（自分で動かしていない時だけ）
+  const count = located.length + (hasGoal ? 1 : 0);
+  if (count > state.fittedCount && !state.userMoved) requestAnimationFrame(fitAll);
+  state.fittedCount = count;
 }
+
+$('#fit-btn').addEventListener('click', () => {
+  state.userMoved = false;
+  fitAll();
+});
+
+// 画面に戻ってきた時（アプリ切り替えなど）は地図サイズを直して全員を表示し直す
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !state.map || !state.room) return;
+  state.map.invalidateSize();
+  if (!state.userMoved) fitAll();
+});
 
 function renderMessages() {
   const list = $('#messages');
@@ -588,8 +687,19 @@ async function updateMe(patch) {
   try {
     await api('PATCH', `/api/rooms/${state.roomId}/members/${state.me.id}`, patch, state.me.token);
   } catch (err) {
+    if (err.status === 403) return lostMembership('別の端末で参加し直されたため、この端末の参加は解除されました');
     toast(err.message);
   }
+}
+
+function lostMembership(msg) {
+  store.set(memberKey(state.roomId), null);
+  state.me = null;
+  stopLocation();
+  const name = store.get('machiawase:name', '');
+  if (name && !$('#join-form').name.value) $('#join-form').name.value = name;
+  toast(msg);
+  if (state.room) renderRoom();
 }
 
 async function sendMessage(text) {
@@ -607,7 +717,14 @@ $('#join-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = e.target.name.value;
   try {
-    const me = await api('POST', `/api/rooms/${state.roomId}/members`, { name });
+    let me;
+    try {
+      me = await api('POST', `/api/rooms/${state.roomId}/members`, { name });
+    } catch (err) {
+      if (err.status !== 409) throw err;
+      if (!confirm(`${err.message}。\nあなた本人なら「OK」で引き継ぎます（ステータスや位置はそのまま）。\n別の人なら「キャンセル」して名前を変えてください。`)) return;
+      me = await api('POST', `/api/rooms/${state.roomId}/members`, { name, takeover: true });
+    }
     state.me = me;
     store.set(memberKey(state.roomId), me);
     store.set('machiawase:name', name.trim());
@@ -670,19 +787,22 @@ $('#share-loc').addEventListener('change', (e) => {
 
 function startLocation() {
   if (!navigator.geolocation) {
-    $('#loc-hint').textContent = 'この端末では位置情報が使えません';
+    $('#loc-hint').textContent = '使えません';
     $('#share-loc').checked = false;
     return;
   }
-  $('#loc-hint').textContent = '位置情報を取得中…';
+  $('#loc-hint').textContent = '取得中…';
+  $('#loc-hint').classList.remove('on');
   state.watchId = navigator.geolocation.watchPosition(
     (p) => {
       state.pendingPos = { lat: p.coords.latitude, lng: p.coords.longitude };
-      $('#loc-hint').textContent = `共有中（精度 約${Math.round(p.coords.accuracy)}m）。このページを開いている間だけ更新されます。`;
+      $('#loc-hint').textContent = '🟢 共有中';
+      $('#loc-hint').classList.add('on');
       flushLocation();
     },
     (err) => {
-      $('#loc-hint').textContent = err.code === 1 ? '位置情報の利用が許可されていません' : '位置情報を取得できませんでした';
+      $('#loc-hint').classList.remove('on');
+      $('#loc-hint').textContent = err.code === 1 ? '許可されていません' : '取得できません';
       if (err.code === 1) {
         $('#share-loc').checked = false;
         store.set(locKey(state.roomId), false);
@@ -712,6 +832,7 @@ function stopLocation() {
   state.sendTimer = null;
   state.pendingPos = null;
   $('#loc-hint').textContent = '';
+  $('#loc-hint').classList.remove('on');
 }
 
 // ---------- ルーティング ----------
